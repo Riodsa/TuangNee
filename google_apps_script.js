@@ -1,26 +1,17 @@
 /**
  * ============================================================================
- * LINE Monthly Payment Tracker Bot — Google Apps Script + Google Sheets (24/7)
+ * LINE Monthly Payment Tracker Bot (TuangNee) — Google Apps Script 24/7
+ * Features:
+ *  - Clean Plain-Text Status Summary (!status) with Bank Account ID
+ *  - Configurable Bank Account (!bank <เลขบัญชี/ธนาคาร> or via Settings sheet)
+ *  - !demo: Instant preview of the monthly notification
  * ============================================================================
- *
- * วิธีตั้งค่า (Setup Guide):
- * 1. สร้างไฟล์ Google Sheet ใหม่ที่ https://sheets.new
- * 2. ไปที่เมนู Extensions (ส่วนขยาย) -> Apps Script
- * 3. ลบโค้ดเดิมทั้งหมด แล้ววางโค้ดไฟล์นี้ลงไปทั้งหมด
- * 4. แก้ไขค่า LINE_CHANNEL_ACCESS_TOKEN และ TOTAL_COST ด้านล่างนี้
- * 5. กดปุ่ม Save (💾) แล้วเลือกฟังก์ชัน `setup` จากเมนูด้านบน แล้วกด Run (▶️)
- *    (ระบบจะสร้างตาราง Members และ Groups พร้อมตั้งเวลาเช็คส่งสรุปรายเดือนอัตโนมัติ)
- * 6. กดปุ่ม Deploy (ทำให้ใช้งานได้) -> New deployment (การทำให้ใช้งานได้รายการใหม่)
- *    - Select type: Web app (เว็บแอป)
- *    - Execute as: Me (ฉัน)
- *    - Who has access: Anyone (ทุกคน)  <-- สำคัญมาก!
- * 7. คัดลอก Web app URL (ที่ลงท้ายด้วย /exec) ไปใส่ในช่อง Webhook URL ของ LINE Developers Console
- *    แล้วเปิด Use webhook ได้เลย!
  */
 
 // ======================= 1. ตั้งค่าเริ่มต้น (CONFIG) =======================
 const LINE_CHANNEL_ACCESS_TOKEN = 'oRbH+4i2FnzD+iv442axMOO6FDDS6rAY9mNT2xA/v4iAbzubCc2ELdELgxcdAV180mp5fN1SzB8YzpHQz4tfVr6bxugvLbqrA9pPNczsDM1n2PqlPS45c2fyQo3my3s2hPVzRnRatyzoy/w1M8keEAdB04t89/1O/w1cDnyilFU=';
 const DEFAULT_TOTAL_COST = 99;       // ยอดรวมรายเดือน (บาท) แก้ในชีต Settings ได้ด้วย
+const DEFAULT_BANK_ACCOUNT = '1918293007 กสิกร';     // เลขบัญชีธนาคาร หรือตั้งผ่านแชทด้วย !bank <เลขบัญชี>
 const DEFAULT_SCHEDULE_DAY = 25;     // วันที่แจ้งเตือนเริ่มต้นของทุกเดือน (1-28)
 const DEFAULT_SCHEDULE_HOUR = 16;    // เวลาแจ้งเตือนเริ่มต้น (ชั่วโมง 0-23)
 const TIMEZONE = 'Asia/Bangkok';
@@ -30,10 +21,15 @@ const THAI_MONTHS_SHORT = [
   'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'
 ];
 
+const TUANG_NEE_QUOTES = [
+  '🦜 "เจ้านกขุนทองไม่พูดเยอะ เจ็บคอ... โอนด้วยครับ!"',
+  '☁️ "พื้นที่ iCloud ยังว่าง แต่พื้นที่ในใจคนจ่ายตังค์เริ่มไม่ว่างแล้ว"',
+  '💸 "อมพระมาพูด ก็ไม่สู้สลิปโอนเงินนะครับเพื่อนรัก"',
+  '🔔 "วันที่ 25 วันพิพากษา ใครยังไม่โอนขุนทองจดชื่อไว้แล้วนะ!"',
+  '🍎 "Tim Cook เรียกเก็บตังค์แล้วจ้า อย่าให้ขุนทองต้องบินไปจิกถึงบ้าน"'
+];
+
 // ======================= 2. ฟังก์ชันเริ่มต้น (SETUP) =======================
-/**
- * รันฟังก์ชันนี้ 1 ครั้งเพื่อสร้างตารางใน Google Sheet และตั้งเวลาส่งข้อความอัตโนมัติ
- */
 function setup() {
   initSheets_();
   setupHourlyTrigger_();
@@ -59,13 +55,20 @@ function initSheets_() {
     groupSheet.getRange('A1:F1').setFontWeight('bold').setBackground('#cfe2f3');
   }
 
-  // 3) ตาราง Settings (แก้ไข TOTAL_COST ในชีตได้ตลอดเวลา)
+  // 3) ตาราง Settings
   let settingSheet = ss.getSheetByName('Settings');
   if (!settingSheet) {
     settingSheet = ss.insertSheet('Settings');
     settingSheet.appendRow(['Key', 'Value', 'Description']);
     settingSheet.appendRow(['TOTAL_COST', DEFAULT_TOTAL_COST, 'ยอดรวมรายเดือน (บาท) หารเท่ากันทุกคนในกลุ่ม']);
+    settingSheet.appendRow(['BANK_ACCOUNT', `'${DEFAULT_BANK_ACCOUNT}`, 'เลขบัญชีธนาคาร / ช่องทางโอนเงิน']);
     settingSheet.getRange('A1:C1').setFontWeight('bold').setBackground('#fff2cc');
+  } else {
+    const data = settingSheet.getDataRange().getValues();
+    const hasBank = data.some(row => String(row[0]).trim() === 'BANK_ACCOUNT');
+    if (!hasBank) {
+      settingSheet.appendRow(['BANK_ACCOUNT', `'${DEFAULT_BANK_ACCOUNT}`, 'เลขบัญชีธนาคาร / ช่องทางโอนเงิน']);
+    }
   }
 }
 
@@ -85,7 +88,7 @@ function setupHourlyTrigger_() {
 // ======================= 3. WEBHOOK HANDLER (LINE) =======================
 function doGet(e) {
   return ContentService.createTextOutput(
-    JSON.stringify({ status: 'ok', message: 'LINE Monthly Payment Tracker Bot is running 24/7 on Google Apps Script!' })
+    JSON.stringify({ status: 'ok', message: 'TuangNee LINE Bot is running 24/7 on Google Apps Script!' })
   ).setMimeType(ContentService.MimeType.JSON);
 }
 
@@ -105,13 +108,15 @@ function doPost(e) {
     if (event.type === 'join') {
       const group = ensureGroup_(targetId);
       const welcomeMsg =
-        'สวัสดีครับ! 🤖 บอทเช็คสถานะการจ่ายเงินรายเดือน (Google Sheets 24/7) พร้อมใช้งานแล้ว\n\n' +
+        'สวัสดีครับ! 🦜 เจ้านกขุนทองทวงหนี้ (TuangNee 24/7) พร้อมใช้งานแล้ว\n\n' +
         '📌 คำสั่งเริ่มต้น:\n' +
-        '• `!add <ชื่อ> [YYYY-MM]` — เพิ่มสมาชิก (เพิ่มหลายคนพร้อมกันได้)\n' +
+        '• `!add <ชื่อ> [YYYY-MM]` — เพิ่มสมาชิก (หลายคนพร้อมกันได้)\n' +
         '• `!paid <ชื่อ> [+จำนวนเดือน]` — บันทึกการจ่ายเงิน\n' +
+        '• `!bank <เลขบัญชี>` — ตั้งเลขบัญชีสำหรับแสดงในสรุป\n' +
         '• `!status` — ดูสรุปสถานะของทุกคน\n' +
+        '• `!demo` — ทดสอบดูการแจ้งเตือนทวงหนี้รายเดือน\n' +
         '• `!help` — ดูคำสั่งทั้งหมด\n\n' +
-        `⏰ บอทจะส่งสรุปสถานะอัตโนมัติทุกวันที่ ${group.scheduleDay} เวลา ${pad2_(group.scheduleHour)}:00 น.`;
+        `⏰ แจ้งเตือนอัตโนมัติทุกวันที่ ${group.scheduleDay} เวลา ${pad2_(group.scheduleHour)}:00 น.`;
       sendReplyMessage_(event.replyToken, welcomeMsg);
     } else if (event.type === 'leave') {
       deactivateGroup_(targetId);
@@ -138,28 +143,28 @@ function doPost(e) {
 }
 
 // ======================= 4. ระบบประมวลผลคำสั่ง (COMMANDS) =======================
-const HELP_TEXT = `🤖 คำสั่งจัดการสถานะการจ่ายเงินรายเดือน:
+const HELP_TEXT = `🦜 คำสั่งเจ้านกขุนทองทวงหนี้ (TuangNee):
 
-1️⃣ ดูสถานะทั้งหมด
-• !status หรือ !สรุป — แสดงสถานะการจ่ายเงินของทุกคนพร้อมยอดหารต่อคน
+1️⃣ ดูสถานะ & ทดสอบแจ้งเตือน
+• !status หรือ !สรุป — แสดงสรุปสถานะการจ่ายเงินของทุกคน
+• !demo หรือ !ตัวอย่าง — จำลองการแจ้งเตือนทวงหนี้รายเดือน
 
-2️⃣ เพิ่ม/อัปเดตการจ่ายเงิน
-• !paid <ชื่อ> [+จำนวนเดือน] — บวกเดือนที่จ่ายเพิ่ม (ค่าเริ่มต้น +1 เดือน)
-  ตัวอย่าง: !paid นัท หรือ !paid นัท +3
-• !จ่ายแล้ว [+จำนวนเดือน] — บันทึกว่าตัวคุณเองจ่ายแล้ว (ดึงชื่อจากโปรไฟล์ LINE)
+2️⃣ ตั้งค่าเลขบัญชีรับโอนเงิน
+• !bank <เลขบัญชี/ธนาคาร> หรือ !บัญชี <เลขบัญชี> — ตั้งค่าเลขบัญชีที่จะแสดงในใบสรุป
+  ตัวอย่าง: !bank กสิกร 123-4-56789-0 (นัท)
+
+3️⃣ เพิ่ม/อัปเดตการจ่ายเงิน
+• !paid <ชื่อ> [+จำนวนเดือน] — บวกเดือนที่จ่ายเพิ่ม (ค่าเริ่มต้น +1)
+• !จ่ายแล้ว [+จำนวนเดือน] — บันทึกว่าตัวคุณเองจ่ายแล้ว
 • !set <ชื่อ> <YYYY-MM> — กำหนดเดือนล่าสุดที่จ่ายแล้วโดยตรง
-  ตัวอย่าง: !set นัท 2026-12 หรือ !set นัท 2569-12
 
-3️⃣ จัดการรายชื่อสมาชิก
-• !add <ชื่อ> [YYYY-MM] [ชื่อ2 YYYY-MM ...] — เพิ่มสมาชิกใหม่พร้อมกันได้หลายคน
-  ตัวอย่าง: !add titan 2026-11 poom 2026-5 teno 2026-1
-• !remove <ชื่อ> หรือ !ลบ <ชื่อ> — ลบสมาชิกออกจากรายการ
-• !reset — ลบรายชื่อสมาชิกทั้งหมดในกลุ่ม
-• !reset <YYYY-MM> — รีเซ็ตเดือนที่จ่ายของสมาชิกทุกคนเป็นเดือนที่ระบุ
+4️⃣ จัดการรายชื่อสมาชิก
+• !add <ชื่อ> [YYYY-MM] [ชื่อ2 YYYY-MM ...] — เพิ่มสมาชิกหลายคนพร้อมกัน
+• !remove <ชื่อ> หรือ !ลบ <ชื่อ> — ลบสมาชิก
+• !reset — ล้างรายชื่อทั้งหมด | !reset <YYYY-MM> — รีเซ็ตเดือนทุกคน
 
-4️⃣ ตั้งค่าแจ้งเตือนรายเดือนอัตโนมัติ
-• !schedule <วันที่ 1-28> <HH:MM> — ตั้งเวลาส่งสรุปอัตโนมัติทุกเดือน
-  ตัวอย่าง: !schedule 25 16:00`;
+5️⃣ ตั้งเวลาแจ้งเตือนรายเดือน
+• !schedule <วันที่ 1-28> <HH:MM> — เช่น !schedule 25 16:00`;
 
 function handleCommand_(text, groupId, senderName, senderUserId) {
   const parts = text.trim().split(/\s+/);
@@ -171,7 +176,24 @@ function handleCommand_(text, groupId, senderName, senderUserId) {
   }
 
   if (['status', 'สรุป', 'เช็ค', 'list'].includes(cmd)) {
-    return buildStatusMessage_(groupId);
+    return buildStatusMessage_(groupId, false);
+  }
+
+  if (['demo', 'ตัวอย่าง', 'test', 'ทวง'].includes(cmd)) {
+    return buildStatusMessage_(groupId, true);
+  }
+
+  if (['bank', 'บัญชี', 'เลขบัญชี', 'account'].includes(cmd)) {
+    if (args.length === 0) {
+      const currentBank = getBankAccount_();
+      if (!currentBank) {
+        return 'ℹ️ ยังไม่ได้ตั้งค่าเลขบัญชีรับโอนเงิน\nพิมพ์ `!bank <เลขบัญชี/ธนาคาร>` เช่น:\n`!bank กสิกร 123-4-56789-0`';
+      }
+      return `🏦 เลขบัญชีปัจจุบัน: **${currentBank}**\nหากต้องการเปลี่ยน พิมพ์ \`!bank <เลขบัญชีใหม่>\``;
+    }
+    const newBank = args.join(' ').trim();
+    setBankAccount_(newBank);
+    return `✅ บันทึกช่องทางโอนเงินเรียบร้อยแล้ว:\n🏦 **${newBank}**`;
   }
 
   if (['add', 'เพิ่ม'].includes(cmd)) {
@@ -333,19 +355,29 @@ function handleCommand_(text, groupId, senderName, senderUserId) {
   return null;
 }
 
-// ======================= 5. สร้างข้อความสรุปสถานะ (STATUS) =======================
-function buildStatusMessage_(groupId) {
+// ======================= 5. สร้างข้อความสรุปสถานะ & !DEMO =======================
+function buildStatusMessage_(groupId, isMonthlyAlert) {
   const ym = getCurrentYearMonth_();
   const members = listMembers_(groupId);
   const group = ensureGroup_(groupId);
   const cost = getTotalCost_();
+  const bankAccount = getBankAccount_();
 
-  let header = `📊 สรุปสถานะการจ่ายเงินประจำเดือน ${formatThaiYearMonth_(ym)}\n`;
+  let header = '';
+  if (isMonthlyAlert) {
+    const quote = TUANG_NEE_QUOTES[Math.floor(Math.random() * TUANG_NEE_QUOTES.length)];
+    header += `🔔 แจ้งเตือนประจำเดือน ${formatThaiYearMonth_(ym)}\n${quote}\n\n`;
+  }
+  header += `📊 สรุปสถานะการจ่ายเงินประจำเดือน ${formatThaiYearMonth_(ym)}\n`;
+
   if (cost > 0 && members.length > 0) {
     const perPerson = cost / members.length;
     header += `💰 ยอดรวม: ${formatAmount_(cost)} บาท/เดือน (คนละ ${formatAmount_(perPerson)} บาท)\n`;
   } else if (cost > 0) {
     header += `💰 ยอดรวม: ${formatAmount_(cost)} บาท/เดือน\n`;
+  }
+  if (bankAccount) {
+    header += `🏦 เลขบัญชี: ${bankAccount}\n`;
   }
   header += '━━━━━━━━━━━━━━━━━━\n';
 
@@ -392,6 +424,9 @@ function buildStatusMessage_(groupId) {
   });
 
   let footer = `\n━━━━━━━━━━━━━━━━━━\n✅ จ่ายแล้ว: ${paidCount} คน | ❌ ค้างชำระ: ${unpaidCount} คน`;
+  if (bankAccount) {
+    footer += `\n🏦 โอนเข้าบัญชี: ${bankAccount}`;
+  }
   if (group) {
     footer += `\n⏰ แจ้งเตือนอัตโนมัติ: ทุกวันที่ ${group.scheduleDay} เวลา ${pad2_(group.scheduleHour)}:${pad2_(group.scheduleMinute)} น.`;
   }
@@ -419,7 +454,7 @@ function checkAndSendMonthlyReports() {
       currentHour >= Number(scheduleHour) &&
       String(lastSentYm) !== currentYm
     ) {
-      const msg = buildStatusMessage_(String(groupId));
+      const msg = buildStatusMessage_(String(groupId), true);
       sendPushMessage_(String(groupId), msg);
       sheet.getRange(i + 1, 6).setValue(currentYm);
     }
@@ -438,6 +473,32 @@ function getTotalCost_() {
     }
   }
   return DEFAULT_TOTAL_COST;
+}
+
+function getBankAccount_() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Settings');
+  if (!sheet) return DEFAULT_BANK_ACCOUNT;
+  const data = sheet.getDataRange().getValues();
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]).trim() === 'BANK_ACCOUNT') {
+      return String(data[i][1] || '').replace(/^'+/, '').trim();
+    }
+  }
+  return DEFAULT_BANK_ACCOUNT;
+}
+
+function setBankAccount_(newBank) {
+  initSheets_();
+  const clean = String(newBank).trim();
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Settings');
+  const data = sheet.getDataRange().getValues();
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]).trim() === 'BANK_ACCOUNT') {
+      sheet.getRange(i + 1, 2).setValue(`'${clean}`);
+      return;
+    }
+  }
+  sheet.appendRow(['BANK_ACCOUNT', `'${clean}`, 'เลขบัญชีธนาคาร / ช่องทางโอนเงิน']);
 }
 
 function ensureGroup_(groupId) {
